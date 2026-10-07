@@ -1,0 +1,126 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AnnotationTrack {
+  layman
+  expert
+}
+
+/// Identity lives in Clerk, not here — this row is just a local FK anchor
+/// for SavedItem/Comment. `id` is Clerk's own user ID (no @default), and
+/// it's created lazily on first authenticated write (see piece.controller's
+/// savePiece) rather than via a separate signup flow or webhook.
+model User {
+  id         String      @id
+  name       String?
+  email      String?
+  createdAt  DateTime    @default(now())
+  savedItems SavedItem[]
+  comments   Comment[]
+}
+
+model Piece {
+  id         String      @id @default(uuid())
+  title      String
+  composer   String
+  year       Int?
+  coverUrl   String?
+  createdAt  DateTime    @default(now())
+  recordings Recording[]
+  scores     Score[]
+  savedItems SavedItem[]
+
+  @@index([title])
+  @@index([composer])
+}
+
+/// Parsed MusicXML metadata for a piece. A piece can have more than one
+/// engraved score (e.g. different editions), though v1 assumes one.
+model Score {
+  id           String      @id @default(uuid())
+  pieceId      String
+  piece        Piece       @relation(fields: [pieceId], references: [id])
+  musicXmlUrl  String
+  measureCount Int
+  createdAt    DateTime    @default(now())
+  syncPoints   SyncPoint[]
+}
+
+/// One performance of a piece, sourced from YouTube.
+model Recording {
+  id            String       @id @default(uuid())
+  pieceId       String
+  piece         Piece        @relation(fields: [pieceId], references: [id])
+  performer     String
+  year          Int?
+  provider      String       @default("youtube")
+  youtubeVideoId String
+  createdAt     DateTime     @default(now())
+  syncPoints    SyncPoint[]
+  annotations   Annotation[]
+  comments      Comment[]
+}
+
+/// The core innovation: a human-authored anchor linking one measure of a
+/// Score to one timestamp in one Recording. Because tempo varies between
+/// performers, this table exists per-recording, not shared across them.
+model SyncPoint {
+  id            String    @id @default(uuid())
+  recordingId   String
+  recording     Recording @relation(fields: [recordingId], references: [id])
+  scoreId       String
+  score         Score     @relation(fields: [scoreId], references: [id])
+  measureNumber Int
+  timestampSec  Float
+  createdAt     DateTime  @default(now())
+
+  @@unique([recordingId, measureNumber])
+  @@index([recordingId, timestampSec])
+}
+
+/// Explanation content keyed to a measure RANGE, not a timestamp — the
+/// SyncPoint table is what resolves "current timestamp" to "current
+/// measure" at playback time; this table never needs to know about time.
+model Annotation {
+  id                String          @id @default(uuid())
+  recordingId       String
+  recording         Recording       @relation(fields: [recordingId], references: [id])
+  measureRangeStart Int
+  measureRangeEnd   Int
+  track             AnnotationTrack
+  text              String
+  createdAt         DateTime        @default(now())
+
+  @@index([recordingId, measureRangeStart, measureRangeEnd])
+}
+
+/// Community annotation — secondary priority per the project's own
+/// scope ordering, kept simple: a timestamp/measure and a body.
+model Comment {
+  id            String    @id @default(uuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id])
+  recordingId   String
+  recording     Recording @relation(fields: [recordingId], references: [id])
+  timestampSec  Float
+  measureNumber Int?
+  body          String
+  createdAt     DateTime  @default(now())
+}
+
+model SavedItem {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  pieceId   String
+  piece     Piece    @relation(fields: [pieceId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([userId, pieceId])
+}
